@@ -48,8 +48,8 @@ if __name__ == '__main__':
     print('Load DIM pretrained parameters, Done')
     
     # Transform
-    channel_means = [123.68, 116.779, 103.939]
-    channel_std = [58.395, 57.120, 57.375]
+    channel_means = [0.485, 0.456, 0.406]
+    channel_std = [0.229, 0.224, 0.225]
     transforms = tv.transforms.Compose([
         tv.transforms.ToTensor(),
         tv.transforms.Normalize(mean=channel_means, std=channel_std)])
