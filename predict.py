@@ -15,7 +15,6 @@ import torchvision as tv
 import dataset
 import model
 
-input_size = 320
 # Device configuration
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
@@ -59,8 +58,6 @@ if __name__ == '__main__':
         for image_path in test_images_paths:
             image = cv2.imread(image_path, -1)
             image_fg = cv2.imread(image_path.replace('.png', '.jpg'))
-            image = cv2.resize(image, (input_size, input_size))
-            image_fg = cv2.resize(image_fg, (input_size, input_size))
             alpha = image[:, :, 3]
             image_rgb = cv2.cvtColor(image_fg, cv2.COLOR_BGR2RGB)
             image_processed = transforms(image_rgb).to(device)

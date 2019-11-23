@@ -19,13 +19,15 @@ parser = argparse.ArgumentParser(description='Train deep image matting model.')
 
 parser.add_argument('--gpu_indices', default=[0, 1, 2, 3], type=int, nargs='+',
                     help='The indices of gpus to be used.')
-parser.add_argument('--num_epochs', default=30, type=int,
+parser.add_argument('--num_epochs', default=300, type=int,
                     help='Number of epochs')
 parser.add_argument('--batch_size_per_gpu', default=16, type=int,
                     help='Batch size of one gpu.')
-parser.add_argument('--learning_rate', default=1e-5, type=float,
+parser.add_argument('--learning_rate', default=1e-4, type=float,
                     help='Initial learning rate.')
-parser.add_argument('--decay_step', default=1000, type=int,
+parser.add_argument('--end_learning_rate', default=1e-6, type=float,
+                    help='End learning rate.')
+parser.add_argument('--decay_epochs', default=20, type=int,
                     help='Decay learning rate every decay_step.')
 parser.add_argument('--lr_decay_factor', default=0.9, type=float,
                     help='Learning rate decay factor.')
@@ -39,8 +41,11 @@ parser.add_argument('--model_dir', default='./models', type=str,
 FLAGS = parser.parse_args()
 
 
-def config_learning_rate(optimizer, step, decay=0.9):
-    lr = FLAGS.learning_rate * decay ** (step / FLAGS.decay_step)
+def config_learning_rate(optimizer, decay=0.9):
+    lr = FLAGS.learning_rate * decay
+    if lr < FLAGS.end_learning_rate:
+        return FLAGS.end_learning_rate
+    
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
     return lr
@@ -52,7 +57,7 @@ def train():
     learning_rate = FLAGS.learning_rate
     lr_decay = FLAGS.lr_decay_factor
     batch_size = FLAGS.batch_size_per_gpu * len(gpu_indices)
-    num_steps_to_save_checkpoint = 32000 // batch_size
+    num_steps_to_save_checkpoint = 128000 // batch_size
     annotation_path = FLAGS.annotation_path
     root_dir = FLAGS.root_dir
     model_dir = FLAGS.model_dir
@@ -111,16 +116,16 @@ def train():
     log = SummaryWriter(log_dir=log_dir)
     
     total_step = len(train_loader)
-    num_steps_to_save = min(num_steps_to_save_checkpoint, total_step)
     for epoch in range(start_epoch, num_epochs):
-        for i, (images, masks, masks_noise) in enumerate(train_loader):
+        for i, (images, alphas, alphas_noise, masks) in enumerate(train_loader):
             images = images.to(device)
+            alphas = alphas.to(device)
+            alphas_noise = alphas_noise.to(device)
             masks = masks.to(device)
-            masks_noise = masks_noise.to(device)
             
             # Forward pass
             outputs = dim(images)
-            loss = model.loss(outputs, masks)
+            loss = model.loss(outputs, alphas, masks=masks)
             
             # Backward and optimize
             optimizer.zero_grad()
@@ -137,17 +142,17 @@ def train():
                 log.add_scalar('loss', loss.item(), step+1)
                 
                 # Log training images
-                info = {'masks':
-                            masks.cpu().numpy()[:2],
-                        'masks_noise':
-                            masks_noise.cpu().numpy()[:2],
-                        'pred_masks': 
+                info = {'alphas':
+                            alphas.cpu().numpy()[:2],
+                        'alphas_noise':
+                            alphas_noise.cpu().numpy()[:2],
+                        'alphas_pred':
                             outputs.data.cpu().numpy()[:2]}
                 for tag, imgs in info.items():
                     log.add_images(tag, imgs, step+1, dataformats='NCHW')
                 
             # Save model
-            if (i+1) % num_steps_to_save == 0:
+            if (step + 1) % num_steps_to_save_checkpoint == 0:
                 print('Save Model: Epoch {}/{}, Step: {}/{}'.format(
                     epoch+1, num_epochs, i+1, total_step))
                 model_name = 'model-{}-{}.ckpt'.format(epoch+1, i+1)
@@ -157,10 +162,11 @@ def train():
                 with open (json_path, 'w') as writer:
                     json.dump(ckpt_dict, writer)
                 
-            # Decay learning rate
-            if i % 100 == 0:
-                lr = config_learning_rate(optimizer, step, decay=lr_decay)
-                log.add_scalar('learning_rate', lr, step+1)
+        # Decay learning rate
+        if epoch % FLAGS.decay_epochs == 0:
+            num_decays = epoch // FLAGS.decay_epochs
+            lr = config_learning_rate(optimizer, decay=lr_decay ** num_decays)
+            log.add_scalar('learning_rate', lr, step+1)
     log.close()
 
     # Final save        

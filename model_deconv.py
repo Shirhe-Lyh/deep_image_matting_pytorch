@@ -171,9 +171,20 @@ class DIM(torch.nn.Module):
         x = self._sigmoid(x)
         return x
     
-    def loss(self, pred_alphas, gt_alphas, epsilon=1e-12):
-        losses = torch.sqrt(
-            torch.mul(pred_alphas - gt_alphas, pred_alphas - gt_alphas) + epsilon)
-        loss_value = torch.mean(losses)
-        return loss_value
+
+def loss(alphas_pred, alphas_gt, masks, images=None, epsilon=1e-12):
+    diff = alphas_pred - alphas_gt
+    diff = diff * masks
+    num_unkowns = torch.sum(masks) + epsilon
+    losses = torch.sqrt(torch.mul(diff, diff) + epsilon)
+    loss = torch.sum(losses) / num_unkowns
+    if images is not None:
+        images_fg_gt = torch.mul(images, alphas_gt)
+        images_fg_pred = torch.mul(images, alphas_pred)
+        images_fg_diff = images_fg_pred - images_fg_gt
+        images_fg_diff = images_fg_diff * masks
+        losses_image = torch.sqrt(
+            torch.mul(images_fg_diff, images_fg_diff) + epsilon)
+        loss += torch.sum(losses_image) / num_unkowns
+    return loss
     

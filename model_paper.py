@@ -22,13 +22,12 @@ VGG16_BN_CONFIGS = {
     }
 
 
-def make_layers(cfg, batch_norm=False):
+def make_layers(cfg, in_channels=3, batch_norm=False):
     """Copy from: torchvision/models/vgg.
     
     Changs retrue_indices in MaxPool2d from False to True.
     """
     layers = []
-    in_channels=3
     for v in cfg:
         if v == 'M':
             layers += [torch.nn.MaxPool2d(kernel_size=2, stride=2, 
@@ -59,7 +58,8 @@ class VGGFeatureExtractor(torch.nn.Module):
         self._config = config
         if self._config is None:
             self._config = VGG16_BN_CONFIGS.get('10conv')
-        self.features = make_layers(self._config, batch_norm=batch_norm)
+        self.features = make_layers(self._config, in_channels=4,
+                                    batch_norm=batch_norm)
         self._indices = None
         self._pre_pool_shapes = None
         
@@ -81,6 +81,11 @@ def vgg16_bn_feature_extractor(config=None, pretrained=True, progress=True):
     if pretrained:
         state_dict = tv.models.utils.load_state_dict_from_url(
             VGG16_BN_MODEL_URL, progress=progress)
+        conv1_weight_name = 'features.0.weight'
+        conv1_weight = model.state_dict()[conv1_weight_name]
+        conv1_weight[:, :3, :, :] = state_dict[conv1_weight_name]
+        conv1_weight[:, 3, :, :] = torch.tensor(0)
+        state_dict[conv1_weight_name] = conv1_weight
         model.load_state_dict(state_dict, strict=False)
     return model
 
@@ -95,9 +100,6 @@ class DIM(torch.nn.Module):
             feature_extractor: Feature extractor, such as VGGFeatureExtractor.
         """
         super(DIM, self).__init__()
-        # Head convolution layer, number of channels: 4 -> 3
-        self._head_conv = torch.nn.Conv2d(in_channels=4, out_channels=3,
-                                          kernel_size=5, padding=2)
         # Encoder
         self._feature_extractor = feature_extractor
         self._feature_extract_config = self._feature_extractor._config
@@ -107,9 +109,11 @@ class DIM(torch.nn.Module):
         self._final_conv = torch.nn.Conv2d(self._feature_extract_config[0], 1,
                                            kernel_size=5, padding=2)
         self._sigmoid = torch.nn.Sigmoid()
+        # Initialization
+        self._init_weights([self._final_conv])
+        self._init_weights(self._decode_layers)
         
     def forward(self, x):
-        x = self._head_conv(x)
         x = self._feature_extractor(x)
         indices = self._feature_extractor._indices[::-1]
         unpool_shapes = self._feature_extractor._pre_pool_shapes[::-1]
@@ -144,6 +148,17 @@ class DIM(torch.nn.Module):
                        torch.nn.ReLU(inplace=True)]
             in_channels = out_channels
         return torch.nn.Sequential(*layers)
+    
+    def _init_weights(self, layers):
+        for layer in layers:
+            if isinstance(layer, torch.nn.Conv2d):
+                torch.nn.init.kaiming_normal_(layer.weight, mode='fan_out', 
+                                              nonlinearity='relu')
+                if layer.bias is not None:
+                    torch.nn.init.constant_(layer.bias, 0)
+            elif isinstance(layer, torch.nn.BatchNorm2d):
+                torch.nn.init.constant_(layer.weight, 1)
+                torch.nn.init.constant_(layer.bias, 0)
     
     
 def loss(alphas_pred, alphas_gt, masks, images=None, epsilon=1e-12):
